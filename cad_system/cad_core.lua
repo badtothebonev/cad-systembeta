@@ -23,6 +23,20 @@ core.login_window = {
 
 -- WEBSOCKET HANDLER ######################
 
+function core.fetchUnitData()
+    if not core.isAuthenticated() then
+        log('CORE', log_levels.WARN, "fetchUnitData call ignored: not authenticated.")
+        return
+    end
+    log('CORE', log_levels.INFO, "Fetching authoritative unit info from server...")
+    local request = {
+        type = 'unit',
+        action = 'fetch_my_unit',
+        token = core.getToken()
+    }
+    cad_websocket.send(request)
+end
+
 local function broadcastUnitUpdate()
     if not core.isAuthenticated() or not core.current_unit then
         log('CORE', log_levels.WARN, "broadcastUnitUpdate call ignored: not authenticated or no unit data.")
@@ -51,21 +65,6 @@ local function broadcastUnitUpdate()
 end
 
 local function handle_auth_response(data)
-    -- This function now makes the SERVER the single source of truth for the unit.
-    local function process_unit_data()
-        log('CORE', log_levels.INFO, "Login successful. Fetching authoritative unit info from server...")
-        
-        local request = {
-            type = 'unit',
-            action = 'fetch_my_unit',
-            token = core.getToken()
-        }
-        cad_websocket.send(request)
-        
-        -- The response will be handled by 'handle_unit_response', which will update the state
-        -- and save the config file.
-    end
-
     if data.action == 'login' then
         core.login_window.is_logging_in = false
         if data.success then
@@ -73,8 +72,6 @@ local function handle_auth_response(data)
             core.current_user = data.user
             core.auth_token = data.token
             
-            process_unit_data() -- Process unit data using local-first logic
-
             settings.set("user_settings", "token", core.auth_token)
             settings.set("user_settings", "currentUser", core.current_user)
             settings.set("user_settings", "username", ffi.string(core.login_window.username))
@@ -91,8 +88,6 @@ local function handle_auth_response(data)
             log('CORE', log_levels.INFO, "Token validation successful.")
             core.current_user = data.user
             core.auth_token = data.token
-            
-            process_unit_data() -- Process unit data using local-first logic
             
             _G.CAD_EVENT_BUS.trigger('auth_login_success')
         else

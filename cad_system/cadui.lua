@@ -2766,13 +2766,20 @@ cadui_module.initialize = function(deps)
         log('UI', log_levels.INFO, "Login success event received. User is authenticated.")
         UI.login_window[0] = false
         
+        -- First, fetch the authoritative unit data to prevent crashes
+        if core and core.fetchUnitData then
+            core.fetchUnitData()
+        end
+
+        -- Then, refresh all other data
+        forceDataRefresh()
+        startBackgroundThreads()
+
+        -- Delay the broadcast to allow the server to process the unit data fetch first
         copas.addthread(function()
             wait(1500)
             broadcastUnitStatus()
         end)
-        
-        forceDataRefresh()
-        startBackgroundThreads()
     end)
 
     events.register('core_logout', function()

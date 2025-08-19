@@ -1,128 +1,178 @@
 --[[ 
     CAD System Bootstrapper
-    Downloads and validates all necessary script files before launching the main application.
+    Автообновление и запуск CAD System.
+    Алгоритм:
+    1. Настраивает package.path (lib, cad_system, корень).
+    2. Скачивает manifest.json с GitHub.
+    3. Если манифест корректный → проверяет версию, обновляет файлы.
+    4. Если манифест не скачан → запускает локальный cad_main.lua.
+    5. Всегда запускает cad_main.lua только через require.
 ]]
 
--- Add lib folder to package path to find dependencies
-package.path = package.path .. ';' .. getWorkingDirectory() .. '\lib\?.lua;'
+-- ==== Пути поиска Lua модулей ====
+local separator = package.config:sub(1,1)
+local work_dir = getWorkingDirectory()
 
+-- lib
+package.path = package.path .. ';' .. work_dir .. separator .. 'lib' .. separator .. '?.lua'
+-- корень moonloader (cad_main.lua)
+package.path = package.path .. ';' .. work_dir .. separator .. '?.lua'
+-- подпапка cad_system
+package.path = package.path .. ';' .. work_dir .. separator .. 'cad_system' .. separator .. '?.lua'
+
+-- ==== Константы ====
 local MANIFEST_URL = "https://raw.githubusercontent.com/badtothebonev/cad-systembeta/main/manifest.json"
+local BASE_URL     = "https://raw.githubusercontent.com/badtothebonev/cad-systembeta/main/"
+local LOCAL_VERSION_FILE = work_dir .. "\\cad_version.txt"
 
-local BASE_URL = "https://raw.githubusercontent.com/badtothebonev/cad-systembeta/main/"
-local LOCAL_VERSION_FILE = getWorkingDirectory() .. "\\cad_version.txt"
-
+-- ==== Библиотеки ====
 local json = require('dkjson')
-local lfs = require('lfs')
+local lfs  = require('lfs')
 
--- Helper function to create directories
-local function ensure_dir_exists(path)
-    local dir = path:match([[(.*[\/])]])
-    if dir then
-        lfs.mkdir(dir)
-    end
-end
-
--- Helper function for logging
+-- ==== Логгер ====
 local function log(msg)
     print("[CAD Loader] " .. msg)
 end
 
--- Main function
+-- ==== Создание директорий ====
+local function ensure_dir_exists(path)
+    local dir = path:match([[(.*[\\/])]])
+    if dir and not lfs.attributes(dir, "mode") then
+        lfs.mkdir(dir)
+    end
+end
+
+-- ==== Запуск cad_main ====
+local function launch_cad()
+    log("Launching CAD System...")
+    local ok, err = pcall(require, 'cad_main')
+    if not ok then
+        log("ERROR loading cad_main: " .. tostring(err))
+    end
+end
+
+-- ==== Основная функция ====
 function main()
+    local update_process_finished = false
     log("Starting CAD System...")
 
-    -- Add a random query to bypass caches
+    local temp_manifest_path = work_dir .. separator .. 'manifest.tmp'
     local manifest_url_no_cache = MANIFEST_URL .. "?t=" .. tostring(os.clock())
-    local temp_manifest_path = os.tmpname()
 
     log("Downloading manifest...")
-    downloadUrlToFile(manifest_url_no_cache, temp_manifest_path, function(id, status, p1, p2)
-        if status ~= 1 then -- 1 = STATUS_ENDDOWNLOADDATA
-            return
-        end
+    downloadUrlToFile(manifest_url_no_cache, temp_manifest_path, function(id, status)
+        if status == 1 then -- STATUS_ENDDOWNLOADDATA
+            -- Немного ждём, чтобы файл успел записаться
+            lua_thread.create(function()
+                wait(100)
 
-        log("Manifest downloaded.")
-        local manifest_file = io.open(temp_manifest_path, "r")
-        if not manifest_file then
-            log("ERROR: Could not open downloaded manifest file.")
-            return
-        end
+                local manifest_file = io.open(temp_manifest_path, "r")
+                if not manifest_file then
+                    log("ERROR: Could not open downloaded manifest file.")
+                    update_process_finished = true
+                    -- Фолбэк на локальный запуск
+                    launch_cad()
+                    return
+                end
 
-        local content = manifest_file:read("*a")
-        manifest_file:close()
-        os.remove(temp_manifest_path)
+                local content = manifest_file:read("*a")
+                manifest_file:close()
+                os.remove(temp_manifest_path)
 
-        local manifest, _, err = json.decode(content)
-        if not manifest then
-            log("ERROR: Could not parse manifest.json: " .. (err or "unknown error"))
-            return
-        end
+                if not content or content == "" then
+                    log("ERROR: Manifest file is empty or invalid.")
+                    update_process_finished = true
+                    launch_cad()
+                    return
+                end
 
-        local remote_version = manifest.version
-        local local_version = "0"
+                local manifest, _, err = json.decode(content)
+                if not manifest then
+                    log("ERROR: Could not parse manifest.json: " .. tostring(err))
+                    log("Manifest raw preview: " .. string.sub(content, 1, 200))
+                    update_process_finished = true
+                    launch_cad()
+                    return
+                end
 
-        local version_file = io.open(LOCAL_VERSION_FILE, "r")
-        if version_file then
-            local_version = version_file:read("*a") or "0"
-            version_file:close()
-        end
+                local remote_version = manifest.version
+                local local_version = "0"
 
-        log("Local version: " .. local_version .. ", Remote version: " .. remote_version)
+                local version_file = io.open(LOCAL_VERSION_FILE, "r")
+                if version_file then
+                    local_version = version_file:read("*a") or "0"
+                    version_file:close()
+                end
 
-        if remote_version == local_version then
-            log("CAD system is up to date. Launching...")
-            -- Use pcall to catch errors during main script execution
-            local ok, err = pcall(require, 'cad_main')
-            if not ok then
-                log("CRITICAL: Failed to run cad_main.lua: " .. tostring(err))
-            end
-            return
-        end
+                log("Local version: " .. local_version .. ", Remote version: " .. remote_version)
 
-        log("New version found. Updating files...")
+                -- === Версия актуальна ===
+                if remote_version == local_version then
+                    log("CAD system is up to date.")
+                    launch_cad()
+                    update_process_finished = true
+                    return
+                end
 
-        local files_to_download = manifest.files
-        local total_files = 0
-        for _ in pairs(files_to_download) do total_files = total_files + 1 end
-        local downloaded_files = 0
+                -- === Обновление ===
+                log("New version found. Updating files...")
+                local files_to_download_list = {}
+                for file_path, remote_path in pairs(manifest.files) do
+                    table.insert(files_to_download_list, {file_path = file_path, remote_path = remote_path})
+                end
+                local total_files = #files_to_download_list
 
-        for file_path, remote_path in pairs(files_to_download) do
-            local local_path = getWorkingDirectory() .. "\\" .. file_path
-            local remote_url = BASE_URL .. remote_path
+                local function download_next_file(index)
+                    if index > total_files then
+                        log("Update complete. Saving new version info.")
+                        local new_version_file = io.open(LOCAL_VERSION_FILE, "w")
+                        if new_version_file then
+                            new_version_file:write(remote_version)
+                            new_version_file:close()
+                        end
+                        launch_cad()
+                        update_process_finished = true
+                        return
+                    end
 
-            ensure_dir_exists(local_path)
+                    local file_info = files_to_download_list[index]
+                    local file_path = file_info.file_path
+                    local remote_path = file_info.remote_path
 
-            log("Downloading (" .. (downloaded_files + 1) .. "/" .. total_files .. "): " .. file_path)
+                    local local_path = work_dir .. separator .. file_path
+                    local remote_url = BASE_URL .. remote_path
+                    ensure_dir_exists(local_path)
 
-            downloadUrlToFile(remote_url, local_path, function(dl_id, dl_status, _, _)
-                if dl_status == 1 then
-                    downloaded_files = downloaded_files + 1
-                    log("Downloaded " .. file_path)
+                    log("Downloading (" .. index .. "/" .. total_files .. "): " .. file_path)
+
+                    downloadUrlToFile(remote_url, local_path, function(_, dl_status)
+                        if dl_status == 1 then
+                            log("Downloaded " .. file_path)
+                            download_next_file(index + 1)
+                        elseif dl_status == 2 then
+                            log("ERROR: Failed to download " .. file_path .. ". Aborting update.")
+                            update_process_finished = true
+                            launch_cad()
+                        end
+                    end)
+                end
+
+                if total_files > 0 then
+                    download_next_file(1)
+                else
+                    log("No files to update.")
+                    launch_cad()
+                    update_process_finished = true
                 end
             end)
-        end
-
-        -- Wait for all downloads to complete (with a timeout)
-        local timeout = 30000 -- 30 seconds
-        local timer = os.clock()
-        while downloaded_files < total_files and (os.clock() - timer) * 1000 < timeout do
-            wait(100)
-        end
-
-        if downloaded_files == total_files then
-            log("Update complete. Saving new version info.")
-            local new_version_file = io.open(LOCAL_VERSION_FILE, "w")
-            if new_version_file then
-                new_version_file:write(remote_version)
-                new_version_file:close()
-            end
-            log("Launching CAD System...")
-            local ok, err = pcall(require, 'cad_main')
-            if not ok then
-                log("CRITICAL: Failed to run cad_main.lua: " .. tostring(err))
-            end
-        else
-            log("ERROR: Update failed. Some files could not be downloaded. Please try again later.")
+        elseif status == 2 then -- STATUS_ENDDOWNLOAD (ошибка)
+            log("ERROR: Manifest download failed. Check URL and internet connection.")
+            update_process_finished = true
+            launch_cad()
         end
     end)
+
+    while not update_process_finished do
+        wait(0)
+    end
 end
