@@ -1,0 +1,12 @@
+{
+  "version": "1.0",
+  "files": {
+    "cad_main.lua": "cad_main.lua",
+    "cad_system/cad_common_new.lua": "cad_system/cad_common_new.lua",
+    "cad_system/cad_settings.lua": "cad_system/cad_settings.lua",
+    "cad_system/cad_core.lua": "cad_system/cad_core.lua",
+    "cad_system/cadui.lua": "cad_system/cadui.lua",
+    "cad_system/_cadparserradio.lua": "cad_system/_cadparserradio.lua",
+    "cad_system/cad_websocket.lua": "cad_system/cad_websocket.lua"
+  }
+}
