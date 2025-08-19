@@ -22,6 +22,44 @@ end
 
 
 function initialize_cad()
+    script_version('1.0')
+script_authors('Gemini')
+
+_G.CAD_DIAGNOSTICS = {}
+
+local script_running = true
+
+function shutdown()
+    log('MAIN', log_levels.INFO, "------ CAD System Shutting Down ------")
+    script_running = false
+    
+    if _G.CAD_DIAGNOSTICS and _G.CAD_DIAGNOSTICS.getDeps then
+        local deps = _G.CAD_DIAGNOSTICS.getDeps()
+        if deps.ui and deps.ui.shutdown then deps.ui.shutdown() end
+        if deps.core and deps.core.shutdown then deps.core.shutdown() end
+        if deps.websocket and deps.websocket.disconnect then deps.websocket.disconnect() end
+    end
+    
+    log('MAIN', log_levels.INFO, "Shutdown complete.")
+end
+
+function script_unload()
+    shutdown()
+end
+
+
+function initialize_cad()
+    -- Auto-updater logic
+    pcall(function()
+        local updater = require('cad_updater')
+        if updater and updater.check then
+            local JSON_URL = "https://raw.githubusercontent.com/badtothebonev/cad-systembeta/main/version.json"
+            local PROJECT_URL = "https://github.com/badtothebonev/cad-systembeta"
+            JSON_URL = JSON_URL .. "?" .. tostring(os.clock()) -- Bypass cache
+            lua_thread.create(updater.check, JSON_URL, "[CAD]: ", PROJECT_URL)
+        end
+    end)
+
     local script_dir = thisScript().path:match([[^(.*[\/])]])
     package.path = package.path .. ';' .. script_dir .. '?.lua;' .. script_dir .. 'cad_system/?.lua;'
     package.cpath = package.cpath .. ';' .. script_dir .. 'lib/?.dll;'
